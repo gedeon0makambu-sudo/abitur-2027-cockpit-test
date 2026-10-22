@@ -1,69 +1,77 @@
-/* Abitur Cockpit 2027 · Service Worker · Release 1.2
-   Startseite: Netz zuerst (am HTTP-Cache vorbei), aber höchstens 3,5 s warten – dann die gespeicherte Version.
-   Offline: Startseite auch bei Aufrufen mit ?-Parametern. Gecacht werden nur vollständige 200-Antworten der eigenen Adresse.
-   Der Service Worker liest oder schreibt nie Lerndaten (localStorage). */
-const CACHE='abitur-cockpit-26-aufgabenbelege';
-const ASSETS=['./','./index.html','./manifest.webmanifest','./icon-180.png','./icon-192.png','./icon-512.png'];
-const NET_TIMEOUT=3500;
+/* Abitur-Cockpit 2027 Stand 27: resilient, scope-safe offline navigation.
+   Cache enthält ausschließlich öffentliche App-Dateien, niemals persönliche Lerndaten.
+   Core installation requires index.html; optional icons/manifest cannot abort installation.
+*/
+const CACHE='abitur-cockpit-27-offline-core';
+const CORE=new URL('index.html',self.registration.scope).href;
+const OPTIONAL=['manifest.webmanifest','icon-180.png','icon-192.png','icon-512.png'];
+const SCOPE=self.registration.scope;
+const TIMEOUT_MS=3000;
 
-self.addEventListener('install',e=>{
-  e.waitUntil(caches.open(CACHE)
-    .then(c=>c.addAll(ASSETS.map(u=>new Request(u,{cache:'reload'}))))
-    .then(()=>self.skipWaiting()));
+async function fetchAndCache(url, cache, key=url){
+  const response=await fetch(new Request(url,{cache:'reload',credentials:'same-origin'}));
+  if(!response || !response.ok || response.type==='opaque')throw new Error('Resource not available: '+url);
+  await cache.put(key,response.clone());
+  return response;
+}
+self.addEventListener('install',event=>{
+  event.waitUntil((async()=>{
+    const cache=await caches.open(CACHE);
+    // Must succeed: otherwise this worker must not claim offline capability.
+    await fetchAndCache(CORE,cache);
+    await Promise.allSettled(OPTIONAL.map(name=>fetchAndCache(new URL(name,SCOPE).href,cache)));
+    await self.skipWaiting();
+  })());
 });
-
-self.addEventListener('activate',e=>{
-  e.waitUntil(caches.keys()
-    .then(keys=>Promise.all(keys.filter(k=>k!==CACHE&&k.startsWith('abitur-')).map(k=>caches.delete(k))))
-    .then(()=>self.clients.claim()));
+self.addEventListener('activate',event=>{
+  event.waitUntil((async()=>{
+    await self.clients.claim();
+    // Keep other version's caches until the new core was verified.
+    const cache=await caches.open(CACHE);
+    if(await cache.match(CORE)){
+      const keys=await caches.keys();
+      await Promise.all(keys.filter(k=>k!==CACHE&&k.startsWith('abitur-cockpit-')).map(k=>caches.delete(k)));
+    }
+  })());
 });
-
-const cacheable=r=>r&&r.status===200&&r.type==='basic'&&!r.redirected;
-
-function fromNetwork(request,cacheKey){
-  // Lädt aus dem Netz und legt nur vollständige Antworten im Cache ab (Abbruch mitten im Download → alter Stand bleibt).
-  return fetch(request).then(r=>{
-    if(cacheable(r)){const copy=r.clone();caches.open(CACHE).then(c=>c.put(cacheKey,copy)).catch(()=>{})}
-    return r;
+function timeout(ms){return new Promise((_,reject)=>setTimeout(()=>reject(new Error('network timeout')),ms));}
+async function navigation(request,event){
+  const cache=await caches.open(CACHE);
+  const target=new URL(request.url);
+  const canonical=target.pathname.endsWith('/')||target.pathname.endsWith('/index.html');
+  if(!canonical)return fetch(request);
+  // Offline response is always the cached, canonical index regardless of query parameters.
+  const online=fetch(new Request(CORE,{cache:'no-store',credentials:'same-origin'})).then(async response=>{
+    if(response.ok && response.type!=='opaque'){
+      await cache.put(CORE,response.clone());
+      return response;
+    }
+    throw new Error('HTTP '+response.status);
   });
+  // Let network refresh continue, but never block navigation beyond timeout.
+  event.waitUntil(online.catch(()=>{}));
+  try{return await Promise.race([online,timeout(TIMEOUT_MS)]);}
+  catch(error){
+    const saved=await cache.match(CORE);
+    if(saved)return saved;
+    return new Response('<!doctype html><html lang="de"><meta charset="utf-8"><title>Offline nicht bereit</title><h1>Offline-Kopie fehlt</h1><p>Bitte die Online-Diagnose unter offline-check.html öffnen.</p>',{status:503,headers:{'Content-Type':'text/html; charset=utf-8'}});
+  }
 }
-
-function withTimeout(promise,ms){
-  return new Promise((resolve,reject)=>{
-    const t=setTimeout(()=>reject(new Error('timeout')),ms);
-    promise.then(v=>{clearTimeout(t);resolve(v)},err=>{clearTimeout(t);reject(err)});
-  });
-}
-
-function offlinePage(){
-  return new Response('<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Abitur Cockpit · offline</title><body style="font-family:-apple-system,sans-serif;padding:24px;color:#14253d"><h1>Gerade offline</h1><p>Die App ist auf diesem Gerät noch nicht gespeichert. Öffne sie einmal mit Internetverbindung. Deine Lerndaten sind davon nicht betroffen.</p></body></html>',
-    {status:503,headers:{'Content-Type':'text/html; charset=utf-8'}});
-}
-
-self.addEventListener('fetch',e=>{
-  const req=e.request;
+self.addEventListener('fetch',event=>{
+  const req=event.request;
   if(req.method!=='GET')return;
   const url=new URL(req.url);
-  if(url.origin!==self.location.origin)return;           // fremde Adressen nicht anfassen
-
+  if(url.origin!==self.location.origin||!url.href.startsWith(SCOPE))return;
   if(req.mode==='navigate'){
-    const isStart=url.pathname.endsWith('/')||url.pathname.endsWith('/index.html');
-    if(!isStart)return;                                   // andere Seiten: Browser-Standard (keine Umleitungsprobleme)
-    const net=fromNetwork(new Request(url.origin+url.pathname,{cache:'no-cache',credentials:'same-origin'}),'./index.html');
-    e.waitUntil(net.catch(()=>{}));                       // Aktualisierung darf auch nach dem Timeout fertig laufen
-    e.respondWith(
-      withTimeout(net,NET_TIMEOUT)
-        .then(r=>r.ok&&!r.redirected?r:caches.match('./index.html').then(c=>c||r))
-        .catch(()=>caches.match('./index.html').then(c=>c||caches.match('./')).then(c=>c||offlinePage()))
-    );
+    event.respondWith(navigation(req,event));
     return;
   }
-
-  // übrige eigene Dateien (z. B. manifest): Netz mit Zeitlimit, sonst Cache (Parameter ignoriert)
-  const net=fromNetwork(new Request(req,{cache:'no-cache'}),req);
-  e.waitUntil(net.catch(()=>{}));
-  e.respondWith(
-    withTimeout(net,NET_TIMEOUT)
-      .catch(()=>caches.match(req,{ignoreSearch:true}).then(c=>c||new Response('Offline und nicht zwischengespeichert',{status:503})))
-  );
+  event.respondWith((async()=>{
+    const cache=await caches.open(CACHE);
+    try{
+      const response=await fetch(req);
+      if(response.ok&&response.type!=='opaque')event.waitUntil(cache.put(req,response.clone()).catch(()=>{}));
+      return response;
+    }catch(error){return await cache.match(req,{ignoreSearch:true})||new Response('Offline nicht verfügbar',{status:503});}
+  })());
 });

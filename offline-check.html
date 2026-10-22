@@ -1,0 +1,23 @@
+<!doctype html><html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#142846"><title>Abi-Cockpit · Offline-Prüfung</title><style>body{font:16px -apple-system,BlinkMacSystemFont,system-ui,sans-serif;max-width:680px;margin:0 auto;padding:24px;line-height:1.55;color:#162942;background:#f5f7fb}h1{font-size:1.5rem}section{background:white;padding:16px;border-radius:12px;margin:14px 0;border:1px solid #dae2ec}button,a.action{display:inline-block;background:#1d497e;color:white;padding:11px 16px;border:0;border-radius:9px;text-decoration:none;font-size:1rem}li{margin:10px 0}.ok{color:#14623e}.bad{color:#a12b2b}.wait{color:#855e00}code{overflow-wrap:anywhere}small{color:#52627a}</style></head><body><h1>Abitur-Cockpit · Offline-Diagnose Stand 27</h1><p>Diese Seite prüft ausschließlich die Offline-Installation. Sie liest oder verändert keine Lerndaten.</p><section><strong>Prüfergebnis</strong><ol id="results"><li class="wait">Prüfung läuft …</li></ol><p id="summary"></p><button id="again">Erneut prüfen</button></section><section><p><a class="action" href="./index.html">Abitur-Cockpit öffnen</a></p><p>Wenn alle Prüfungen erfolgreich sind: App online über das Home-Bildschirm-Symbol öffnen, anschließend Flugmodus einschalten und die App erneut über dieses Symbol starten.</p><small>Hinweis: Ein erfolgreicher Technikcheck ersetzt den echten Offline-Test auf deinem iPhone nicht.</small></section><script>
+const $=id=>document.getElementById(id);
+async function run(){let results=[];const add=(ok,text)=>results.push({ok,text});$('summary').textContent='Prüfung läuft …';
+try{
+ add(location.protocol==='https:'||location.hostname==='localhost'||location.hostname==='127.0.0.1','Sicherer Ursprung (HTTPS oder lokaler Test)');
+ if(!('serviceWorker'in navigator)){add(false,'Service Worker wird nicht unterstützt');throw Error('kein Service Worker');}
+ let registration;
+ try{registration=await navigator.serviceWorker.register('./sw.js?v=stand27',{scope:'./'});add(true,'Service-Worker-Registrierung erfolgreich');}
+ catch(e){add(false,'Registrierung fehlgeschlagen: '+String(e));throw e;}
+ try{registration=await Promise.race([navigator.serviceWorker.ready,new Promise((_,rej)=>setTimeout(()=>rej(Error('nach 15 Sekunden noch nicht aktiv')),15000))]);add(!!registration.active,'Service Worker aktiv');}
+ catch(e){add(false,'Aktivierung: '+String(e));}
+ add(!!navigator.serviceWorker.controller,'Diese Seite wird bereits vom Service Worker kontrolliert (nach erstem Aufruf ggf. neu laden)');
+ if(!('caches'in window)){add(false,'Cache Storage nicht verfügbar');throw Error('kein Cache Storage');}
+ const key=new URL('./index.html',location.href).href;
+ const match=await caches.match(key);
+ add(!!match,'Offline-Startseite gespeichert: '+key);
+ const cacheNames=await caches.keys();
+ add(cacheNames.some(n=>n==='abitur-cockpit-27-offline-core'),'Cache Stand 27 vorhanden');
+}catch(e){if(!results.some(r=>!r.ok))add(false,String(e));}
+ $('results').innerHTML=results.map(r=>'<li class="'+(r.ok?'ok':'bad')+'">'+(r.ok?'✓ ':'✗ ')+r.text.replace(/&/g,'&amp;').replace(/</g,'&lt;')+'</li>').join('');
+ $('summary').textContent=results.every(r=>r.ok)?'Alle technischen Vorprüfungen bestanden. Jetzt echten Flugmodus-Test durchführen.':'Mindestens eine Vorprüfung fehlgeschlagen. Bitte einen Screenshot dieser Seite senden.';
+}
+$('again').addEventListener('click',run);run();</script></body></html>
