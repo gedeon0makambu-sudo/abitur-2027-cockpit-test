@@ -1,8 +1,8 @@
-/* Abitur-Cockpit 2027 Stand 27: resilient, scope-safe offline navigation.
+/* Abitur-Cockpit 2027 Stand 28: resilient, scope-safe offline navigation.
    Cache enthält ausschließlich öffentliche App-Dateien, niemals persönliche Lerndaten.
    Core installation requires index.html; optional icons/manifest cannot abort installation.
 */
-const CACHE='abitur-cockpit-27-offline-core';
+const CACHE='abitur-cockpit-28-offline-core';
 const CORE=new URL('index.html',self.registration.scope).href;
 const OPTIONAL=['manifest.webmanifest','icon-180.png','icon-192.png','icon-512.png'];
 const SCOPE=self.registration.scope;
